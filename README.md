@@ -14,7 +14,8 @@ There are two commands, both runnable locally or as the OpenHEXA pipeline's `mod
 
 - **The facility pyramid, from DHIS2:** every unit's name, its place in the hierarchy (country → region → district → facility) and its closing date, if any. Only the structure is used, never reported values.
 - **Population per district and year:** a DHIS2 data element, chosen at run time, or a CSV. Missing years are projected from the nearest year with data at 3% growth a year.
-- **Baseline malaria incidence per district:** cases per 1,000 people per year, taken from a Malaria Atlas Project (MAP) raster averaged over each district's boundary (the boundaries come from DHIS2), or from a CSV.
+- **Baseline malaria incidence per district:** cases per 1,000 people per year, taken from a Malaria Atlas Project (MAP) raster averaged over each district's boundary, or from a CSV.
+- **District boundaries (polygons):** needed only when incidence comes from a raster. They're read from the org unit geometries in DHIS2, or from a GeoJSON file that carries each district's DHIS2 UID.
 - **Optional facility types:** from a DHIS2 group set, a CSV, or rules on facility names (as for Côte d'Ivoire, e.g. "CSR…" = rural health centre).
 - **Parameters** in a YAML config file (see `examples/tiny/config.yaml` for all of them).
 
@@ -56,6 +57,27 @@ The same config, inputs and random seed always give exactly the same data.
 - **`summary_report.md`, with CSV tables:** totals per year, simulated vs input incidence per district, results by facility type, how often months are zero, and stock shortfalls.
 - **`inputs/`:** copies of the inputs as read (facilities, population, district boundaries, incidence per district).
 
+### Indicators produced
+
+One value per facility and month, in `datavalues.csv` (column `element`):
+
+| Element | What it is | How it is derived |
+|---|---|---|
+| `confirmed` | Confirmed malaria cases | Facility's share of the district's Poisson-drawn cases |
+| `confirmed_u5` | Confirmed cases, under 5 | Binomial(confirmed, `u5_share`) |
+| `confirmed_5plus` | Confirmed cases, 5 and over | confirmed − confirmed_u5 |
+| `tested_total` | Suspected cases tested | confirmed ÷ `positivity`, rounded |
+| `tested_microscopy` | Tested by microscopy | Binomial(tested_total, microscopy share of the facility type) |
+| `tested_rdt` | Tested by RDT | tested_total − tested_microscopy |
+| `suspected` | Suspected malaria cases | tested_total ÷ `testing_rate`, rounded |
+| `act_treated` | Confirmed cases treated with an ACT | Binomial(confirmed, `act_rate`) |
+| `severe` | Severe malaria cases | Binomial(confirmed, `severe_rate`) |
+| `deaths` | Malaria deaths | Binomial(severe, `cfr`) |
+| `stock_rdt_end` | RDTs in stock at month end | max(0, opening stock + delivery − tested_rdt) |
+| `stock_act_end` | ACT treatments in stock at month end | max(0, opening stock + delivery − act_treated) |
+
+`datavalues.json` contains only the elements listed in the DHIS2 mapping file.
+
 The sections below are the technical reference.
 
 ## Install and run
@@ -90,7 +112,8 @@ year, polygon coverage and the range of raster incidence per unit.
 | Levels | `pyramid.facility_level`, `pyramid.population_level` | integers; facilities are the units at `facility_level` |
 | Facility types (optional) | `pyramid.facility_type` | org unit group set UID (from the export or API) or CSV `ou_uid, type` |
 | Population | `population.source` = `csv` / `dhis2` | CSV `ou_uid, year, pop`, or a data element. `dhis2_method: raw` (default) reads yearly values stored at the population units themselves; `analytics` uses analytics totals, which also sum values entered below the unit or for other periods. Missing years are projected from the nearest observed year with `run.pop_growth` |
-| Baseline incidence | `incidence.source` = `csv` / `raster` | CSV `ou_uid, incidence_per_1000`, or a raster reduced to each unit by zonal mean (`all_touched`). Polygons come from a GeoJSON file or from DHIS2 (`geometry_source: dhis2`). Needs `pip install -e ".[raster]"`; `raster_scale` converts to per 1000/year (MAP rasters: 1000) |
+| Baseline incidence | `incidence.source` = `csv` / `raster` | CSV `ou_uid, incidence_per_1000`, or a raster (`incidence.raster_path`) reduced to each population unit by zonal mean over its polygon (`all_touched`). Needs `pip install -e ".[raster]"`; `raster_scale` converts to per 1000/year (MAP rasters: 1000) |
+| Population unit geometries (raster only) | `incidence.geometry_source` = `dhis2` / `file` | `dhis2`: org unit geometries from the Web API (Polygon / MultiPolygon only). `file`: GeoJSON FeatureCollection at `incidence.geometry_path`, with the org unit UID in the property named by `incidence.id_property` (default `id`, which also matches the feature's own `id`, as in DHIS2 GeoJSON exports). A population unit with facilities but no polygon gets no incidence, and the run stops with an error |
 | Closed facilities | `pyramid.drop_closed_before_start` | facilities with a `closedDate` before `run.start` are dropped (default true) |
 | DHIS2 mapping (optional) | `mapping` | YAML element -> `dataElement` / `categoryOptionCombo`; see `examples/tiny/mapping.yaml` |
 
