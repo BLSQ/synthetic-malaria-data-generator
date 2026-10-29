@@ -1,0 +1,57 @@
+# Tiny synthetic pyramid: 2 districts (population level 2), 6 facilities (level 4).
+# Relative paths resolve against this file's folder.
+
+run:
+  start: "2021-01"
+  months: 36
+  seed: 42
+  pop_growth: 0.03
+
+pyramid:
+  source: metadata            # metadata | csv | api
+  path: metadata.json
+  facility_level: 4
+  population_level: 2
+  facility_type:
+    source: group_set         # group_set | csv
+    group_set: GsFacType01
+    type_key: name            # name | code | id
+    default_type: unknown
+
+population:
+  source: csv                 # csv | dhis2
+  path: population.csv
+
+incidence:
+  source: csv                 # csv | raster
+  path: incidence.csv
+
+rates:
+  care_seeking: 0.6
+  u5_share: 0.4
+  positivity: 0.45
+  testing_rate: 0.9
+  act_rate: 0.95
+  severe_rate: 0.05
+  cfr: 0.02
+
+micro_share:
+  default: 0.0
+  by_type:
+    Hospital: 0.3
+
+allocation_weights:
+  default: 1.0
+  by_type:
+    Hospital: 3.0
+    Health Centre: 2.0
+    Health Post: 1.0
+
+stocks:
+  stock_start_months: 2
+  delivery_factor: 1.0
+
+mapping: mapping.yaml
+
+output:
+  dir: output

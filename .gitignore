@@ -1,0 +1,26 @@
+# Generated outputs (large, reproducible from config + seed)
+output/
+examples/*/output/
+
+# OpenHEXA bundle (built by scripts/build_openhexa.py)
+build/
+
+# Input data not redistributed here (MAP rasters: download from the MAP data portal)
+data/
+
+# Downloaded pipeline versions used for syncing with OpenHEXA
+downloads/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Local tool settings
+.claude/settings.local.json
+
+# Credentials, in case one is ever written locally
+.env

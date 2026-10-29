@@ -1,0 +1,92 @@
+# Côte d'Ivoire, first run. Instance: https://dhis2.dedop-rci.bluesquare.org
+# Pass the population data element at run time:
+#   malsim inspect  --config examples/civ/config.yaml --population-de <UID>
+#   malsim generate --config examples/civ/config.yaml --population-de <UID>
+# Credentials: CIV_NMDR_USERNAME / CIV_NMDR_PASSWORD env vars locally;
+# on OpenHEXA the workspace DHIS2 connection is used instead.
+
+run:
+  start: "2021-01"
+  months: 60
+  seed: 1
+  pop_growth: 0.03
+
+pyramid:
+  source: api
+  facility_level: 4             # Etablissement sanitaire (5,884)
+  population_level: 3           # District sanitaire (114)
+  # root: <région sanitaire UID>  # uncomment to test on one region first
+  drop_closed_before_start: true
+  # No facility-type group set on this instance: types come from naming conventions.
+  # Patterns are searched in the upper-cased name with accents removed; the first match wins.
+  facility_type:
+    source: name_rules
+    default_type: other
+    rules:
+      # Not malaria care providers (allocation weight 0: not simulated)
+      - {pattern: "OPTI|LUNET|VISION|GLASSES|DENTAIRE|DENTISTE|PROTHESE|AUDIO|ANATOMO|ORTHOTECH|KINE|READAPTATION|EQUIPEMENT|^ENTREPRISE", type: not_malaria}
+      # Public hospitals (EPH = etablissement public hospitalier, HG = hopital general)
+      - {pattern: "^(EPHN|CHU)\\b", type: hospital_national}
+      - {pattern: "^(EPHR|CHR)\\b", type: hospital_regional}
+      - {pattern: "^(EPHD|HG)\\b|\\bHG\\b", type: hospital_district}
+      # Specialised urban services (CSUS): mother-and-child, school health, TB, HIV testing, hygiene
+      - {pattern: "\\bPMI\\b", type: mch_centre}
+      - {pattern: "\\bSSSU\\b", type: school_health}
+      - {pattern: "^CSUS\\b|^CDT\\b|^INHP\\b|^CHS\\b|\\bCAT\\b|\\bCDV\\b|LABORATOIRE", type: specialised}
+      # Company, military and workplace health services
+      - {pattern: "^ESE\\b|^ICT\\b|^CSA\\b|^CMA\\b|MEDICO[- ]SOCIAL|SANTE AU TRAI?VAIL", type: occupational}
+      # Public primary care
+      - {pattern: "\\bCSR\\b|DISPENSAIRE", type: rural_health_centre}
+      - {pattern: "\\b(CSU|FSU)\\b", type: urban_health_centre}
+      # Nursing posts and maternities (before clinics, e.g. "ESP-CENTRE DE SOINS INFIRMIERS")
+      - {pattern: "^INF\\b|INFIRM|SOINS INFIRMIERS", type: nursing_post}
+      - {pattern: "MATERNITE", type: maternity}
+      # Private (ESP) and faith-based (ESC) clinics and medical centres
+      - {pattern: "CLINIQUE|MEDICAL|MEDICO|\\bCMS?\\b|^ESP\\b|^ESC\\b|CABINET", type: clinic}
+
+# Relative share of a district's malaria cases per facility, by type. Starting assumptions
+# (public primary care carries most cases), to be reviewed with the programme.
+allocation_weights:
+  default: 0.2
+  by_type:
+    rural_health_centre: 1.0
+    urban_health_centre: 1.5
+    hospital_district: 3.0
+    hospital_regional: 3.0
+    hospital_national: 2.0
+    mch_centre: 0.8
+    clinic: 0.4
+    nursing_post: 0.3
+    school_health: 0.3
+    maternity: 0.2
+    occupational: 0.2
+    specialised: 0.05
+    other: 0.2
+    not_malaria: 0.0
+
+# Share of tests done by microscopy, by type (others RDT only).
+micro_share:
+  default: 0.0
+  by_type:
+    hospital_district: 0.3
+    hospital_regional: 0.3
+    hospital_national: 0.3
+    clinic: 0.2
+
+population:
+  source: dhis2
+  data_element: null            # given at run time with --population-de
+
+incidence:
+  source: raster
+  raster_path: ../../data/civ/MAP-rasters/202608_Global_Pf_Incidence_Rate_CIV_2023.tiff
+  geometry_source: dhis2        # district polygons from the instance
+  raster_scale: 1000            # MAP values are cases per person per year
+
+dhis2:
+  url: https://dhis2.dedop-rci.bluesquare.org
+  username_env: CIV_NMDR_USERNAME
+  password_env: CIV_NMDR_PASSWORD
+
+output:
+  dir: ../../output/civ

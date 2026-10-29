@@ -1,0 +1,5 @@
+# Keep LF line endings in the repository and working copy (OpenHEXA runs on Linux).
+* text=auto eol=lf
+*.tif binary
+*.tiff binary
+*.parquet binary

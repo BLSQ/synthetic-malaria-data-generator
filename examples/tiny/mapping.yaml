@@ -1,0 +1,14 @@
+# Element -> DHIS2 dataElement / categoryOptionCombo UIDs (made up for the example).
+# Unmapped elements are left out of datavalues.json.
+attributeOptionCombo: HllvX50cXC0
+elements:
+  confirmed_u5:      {dataElement: DeConfirmd1, categoryOptionCombo: CocUnder5Y1}
+  confirmed_5plus:   {dataElement: DeConfirmd1, categoryOptionCombo: Coc5PlusYr1}
+  tested_rdt:        {dataElement: DeTestedRd1}
+  tested_microscopy: {dataElement: DeTestedMc1}
+  suspected:         {dataElement: DeSuspectd1}
+  act_treated:       {dataElement: DeActTreat1}
+  severe:            {dataElement: DeSevere001}
+  deaths:            {dataElement: DeDeaths001}
+  stock_rdt_end:     {dataElement: DeStockRdt1}
+  stock_act_end:     {dataElement: DeStockAct1}

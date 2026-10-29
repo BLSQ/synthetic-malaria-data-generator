@@ -1,0 +1,31 @@
+{
+  "organisationUnits": [
+    {"id": "CtryAAAAAA1", "name": "Testland", "level": 1},
+    {"id": "DistAAAAAA1", "name": "North District", "level": 2, "parent": {"id": "CtryAAAAAA1"}},
+    {"id": "DistAAAAAA2", "name": "South District", "level": 2, "parent": {"id": "CtryAAAAAA1"}},
+    {"id": "AreaAAAAAA1", "name": "North Area A", "level": 3, "parent": {"id": "DistAAAAAA1"}},
+    {"id": "AreaAAAAAA2", "name": "North Area B", "level": 3, "parent": {"id": "DistAAAAAA1"}},
+    {"id": "AreaAAAAAA3", "name": "South Area A", "level": 3, "parent": {"id": "DistAAAAAA2"}},
+    {"id": "FaclAAAAAA1", "name": "North Hospital", "level": 4, "parent": {"id": "AreaAAAAAA1"}},
+    {"id": "FaclAAAAAA2", "name": "North A Health Centre", "level": 4, "parent": {"id": "AreaAAAAAA1"}},
+    {"id": "FaclAAAAAA3", "name": "North B Health Centre", "level": 4, "parent": {"id": "AreaAAAAAA2"}},
+    {"id": "FaclAAAAAA4", "name": "North B Health Post", "level": 4, "parent": {"id": "AreaAAAAAA2"},
+     "organisationUnitGroups": [{"id": "GrpHlthPst1"}]},
+    {"id": "FaclAAAAAA5", "name": "South Health Centre", "level": 4, "parent": {"id": "AreaAAAAAA3"}},
+    {"id": "FaclAAAAAA6", "name": "South Clinic (untyped)", "level": 4, "parent": {"id": "AreaAAAAAA3"}}
+  ],
+  "organisationUnitGroups": [
+    {"id": "GrpHospitl1", "name": "Hospital", "code": "HOSP",
+     "organisationUnits": [{"id": "FaclAAAAAA1"}]},
+    {"id": "GrpHlthCtr1", "name": "Health Centre", "code": "HC",
+     "organisationUnits": [{"id": "FaclAAAAAA2"}, {"id": "FaclAAAAAA3"}, {"id": "FaclAAAAAA5"}]},
+    {"id": "GrpHlthPst1", "name": "Health Post", "code": "HP", "organisationUnits": []},
+    {"id": "GrpPublic01", "name": "Public", "code": "PUB",
+     "organisationUnits": [{"id": "FaclAAAAAA1"}, {"id": "FaclAAAAAA2"}, {"id": "FaclAAAAAA3"},
+                           {"id": "FaclAAAAAA4"}, {"id": "FaclAAAAAA5"}, {"id": "FaclAAAAAA6"}]}
+  ],
+  "organisationUnitGroupSets": [
+    {"id": "GsFacType01", "name": "Facility type",
+     "organisationUnitGroups": [{"id": "GrpHospitl1"}, {"id": "GrpHlthCtr1"}, {"id": "GrpHlthPst1"}]}
+  ]
+}
