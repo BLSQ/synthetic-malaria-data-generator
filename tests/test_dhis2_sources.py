@@ -194,12 +194,15 @@ def test_cli_inspect_file_sources(capsys):
     assert report["pyramid"]["facilities_mapped"] == 6
 
 
-def test_civ_config_needs_population_de():
-    with pytest.raises(ConfigError, match="data_element"):
-        load_config(ROOT / "examples" / "civ" / "config.yaml")
-    cfg = resolve_config(ROOT / "examples" / "civ" / "config.yaml", population_de="DePopTotal1")
+def test_civ_config_loads():
+    from malsim.mapping import load_mapping
+    cfg = load_config(ROOT / "examples" / "civ" / "config.yaml")
     assert (cfg.pyramid.facility_level, cfg.pyramid.population_level) == (4, 3)
     assert Path(cfg.incidence.raster_path).name.endswith("CIV_2023.tiff")
+    assert cfg.population.source == "csv" and Path(cfg.mapping).name == "mapping.yaml"
+    assert set(load_mapping(cfg.mapping)["age_bands"]) == set(cfg.rates.bands)
+    cfg = resolve_config(ROOT / "examples" / "civ" / "config.yaml", population_de="DePopTotal1")
+    assert cfg.population.source == "dhis2"
 
 
 # --- OpenHEXA bundle ------------------------------------------------------------------------

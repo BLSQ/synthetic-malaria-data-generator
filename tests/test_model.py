@@ -52,16 +52,43 @@ def test_invariants_hold_on_tiny_run(tiny_cfg):
 
 
 @pytest.mark.parametrize("seed", [1, 2, 3])
-def test_invariants_hold_under_stockouts_and_extremes(tmp_path, seed):
+def test_invariants_hold_under_extremes(tmp_path, seed):
     cfg = tiny_with(tmp_path, {
         "run": {"seed": seed, "months": 60},
-        "rates": {"positivity": 0.9, "testing_rate": 0.5, "severe_rate": 0.5, "cfr": 0.5, "act_rate": 1.0},
-        "stocks": {"stock_start_months": 0, "delivery_factor": 0.7},
+        "rates": {"positivity": 0.9, "testing_rate": 0.5, "severe_rate": 0.5, "cfr": 0.5, "act_rate": 1.0,
+                  "presumed_rate": 1.0,
+                  "age_bands": [{"band": "u1", "share": 0.1}, {"band": "1-4", "share": 0.3},
+                                {"band": "5plus", "share": 0.6}]},
+        "mapping": None,
     })
     result = prepare_and_simulate(cfg).result
     assert violations(result) == []
-    assert (result.facilities["unmet_act"] > 0).any()  # stockouts actually happen
-    assert (result.facilities["stock_act_end"] >= 0).all()
+    f = result.facilities
+    # presumed_rate 1: every untested suspected case is presumed
+    assert (f["presumed"] == f["suspected"] - f["tested_total"]).all()
+
+
+def test_age_bands_split_confirmed(tiny_cfg):
+    f = prepare_and_simulate(tiny_cfg).result.facilities
+    assert (f["confirmed__u5"] + f["confirmed__5plus"] == f["confirmed"]).all()
+    share_u5 = f["confirmed__u5"].sum() / f["confirmed"].sum()
+    assert share_u5 == pytest.approx(0.4, abs=0.05)
+    for name in ["suspected", "presumed", "confirmed_simple", "confirmed_severe"]:
+        assert (f[f"{name}__u5"] + f[f"{name}__5plus"] == f[name]).all(), name
+
+
+def test_severe_rate_by_band(tmp_path):
+    cfg = tiny_with(tmp_path, {"run": {"months": 60}, "rates": {"severe_rate": 0.0, "severe_rate_by_band": {"u5": 0.5}}})
+    f = prepare_and_simulate(cfg).result.facilities
+    assert f["confirmed_severe__5plus"].sum() == 0
+    assert f["confirmed_severe__u5"].sum() / f["confirmed__u5"].sum() == pytest.approx(0.5, abs=0.1)
+
+
+def test_split_age_by_hand():
+    rng = np.random.default_rng(0)
+    out = model.split_age(np.array([[10, 0], [7, 3]]), [0.25, 0.75], rng)
+    assert out.shape == (2, 2, 2)
+    assert out.sum(axis=0).tolist() == [[10, 0], [7, 3]]
 
 
 def test_facility_sum_equals_unit_confirmed(tiny_cfg):
@@ -69,19 +96,6 @@ def test_facility_sum_equals_unit_confirmed(tiny_cfg):
     fac = r.facilities.groupby(["pop_unit", "period"])["confirmed"].sum()
     unit = r.units.set_index(["ou_uid", "period"])["confirmed"]
     assert fac.to_numpy().tolist() == unit.to_numpy().tolist()
-
-
-def test_simulate_stock_by_hand():
-    use = np.array([[5, 30, 0, 10]])
-    expected = np.full((1, 4), 10.0)
-    s = model.simulate_stock(use, expected, start_months=2, delivery_factor=1.0)
-    assert s["start"].tolist() == [[20, 25, 5, 15]]
-    assert s["delivery"].tolist() == [[10, 10, 10, 10]]
-    assert s["end"].tolist() == [[25, 5, 15, 15]]
-    assert s["unmet"].tolist() == [[0, 0, 0, 0]]
-    s = model.simulate_stock(np.array([[50, 0]]), np.full((1, 2), 10.0), 1, 1.0)
-    assert s["end"].tolist() == [[0, 10]]
-    assert s["unmet"].tolist() == [[30, 0]]
 
 
 def test_implied_incidence_close_to_input(tmp_path):
@@ -100,6 +114,10 @@ def test_streams_are_independent_across_steps(tmp_path):
     """Changing a later-step parameter must not change earlier draws."""
     a = prepare_and_simulate(tiny_with(tmp_path, {"rates": {"cfr": 0.02}})).result.facilities
     b = prepare_and_simulate(tiny_with(tmp_path, {"rates": {"cfr": 0.5}})).result.facilities
-    for col in ["confirmed", "confirmed_u5", "tested_microscopy", "act_treated", "severe"]:
+    for col in ["confirmed", "confirmed__u5", "tested_microscopy", "act_treated", "confirmed_severe", "presumed"]:
         assert a[col].equals(b[col]), col
     assert not a["deaths"].equals(b["deaths"])
+    c = prepare_and_simulate(tiny_with(tmp_path, {"rates": {"presumed_rate": 0.9}})).result.facilities
+    for col in ["confirmed__u5", "confirmed_severe", "deaths"]:
+        assert a[col].equals(c[col]), col
+    assert not a["presumed"].equals(c["presumed"])

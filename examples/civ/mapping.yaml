@@ -1,0 +1,15 @@
+# Côte d'Ivoire demo instance (nmdr-test). Resolved to UIDs against the instance at run time;
+# the resolved UIDs are written to dhis2_mapping.yaml next to the outputs.
+dataSet: {name: "Module 1 - EPI"}                       # EkcFtGQbReT
+attributeOptionCombo: {name: default}                   # HllvX50cXC0
+skip_zeros: false                                       # zeroIsSignificant is on for these elements
+# Elements by UID: on the instance (2026-11) the accented names are stored double-encoded
+# ("confirmÃ©"), so a lookup by the correct name finds nothing.
+elements:
+  suspected:        {dataElement: {id: ZwzXYmWl00E}}   # EPI - Nombre de cas suspect de paludisme
+  presumed:         {dataElement: {id: BKxUq6e6hik}}   # EPI - Nombre de cas présumé de paludisme
+  confirmed_simple: {dataElement: {id: L8139czE64z}}   # EPI - Nombre de cas confirmé de paludisme simple
+  confirmed_severe: {dataElement: {id: cE9sSXbZNpW}}   # EPI - Nombre de cas confirmé de paludisme grave
+age_bands:                                              # category combo "groupe age 5"
+  u5:    {name: "< 5ans"}                               # FcW07l00FML
+  5plus: {name: ">= 5ans"}                              # k1QbgGU80Ss

@@ -7,14 +7,15 @@ import json
 import logging
 import subprocess
 from pathlib import Path
+from typing import Iterator
 
 import numpy as np
 import pandas as pd
 import yaml
 
 from . import __version__
-from .config import Config, ConfigError
-from .model import ELEMENTS, SimulationResult
+from .config import Config
+from .model import ELEMENTS, SimulationResult, band_column
 from .pyramid import Pyramid
 
 log = logging.getLogger(__name__)
@@ -22,66 +23,57 @@ log = logging.getLogger(__name__)
 
 # --- data values ----------------------------------------------------------------
 
-def tidy_datavalues(result: SimulationResult) -> pd.DataFrame:
-    """Facility elements in long form: ou_uid, period, element, value."""
+def tidy_datavalues(result: SimulationResult, bands: list[str]) -> pd.DataFrame:
+    """Reported elements by age band in long form: ou_uid, period, element, age_band, value."""
     f = result.facilities.sort_values(["ou_uid", "period"], kind="stable")
-    long = f.melt(id_vars=["ou_uid", "period"], value_vars=ELEMENTS, var_name="element", value_name="value")
-    long["element"] = pd.Categorical(long["element"], categories=ELEMENTS, ordered=True)
-    long = long.sort_values(["ou_uid", "period", "element"], kind="stable").reset_index(drop=True)
-    long["element"] = long["element"].astype(str)
+    cols = [band_column(e, b) for e in ELEMENTS for b in bands]
+    long = f.melt(id_vars=["ou_uid", "period"], value_vars=cols, var_name="col", value_name="value")
+    long["col"] = pd.Categorical(long["col"], categories=cols, ordered=True)
+    long = long.sort_values(["ou_uid", "period", "col"], kind="stable").reset_index(drop=True)
+    parts = long["col"].astype(str).str.split("__", n=1, expand=True)
+    long["element"], long["age_band"] = parts[0], parts[1]
     long["value"] = long["value"].astype(np.int64)
-    return long
+    return long[["ou_uid", "period", "element", "age_band", "value"]]
 
 
 def write_datavalues_csv(tidy: pd.DataFrame, path: Path) -> None:
     tidy.to_csv(path, index=False, lineterminator="\n")
 
 
-def load_mapping(path: str) -> dict:
-    """Mapping YAML:
-
-        attributeOptionCombo: HllvX50cXC0   # optional default
-        elements:
-          confirmed_u5: {dataElement: abc, categoryOptionCombo: def}
-    """
-    with open(path, encoding="utf-8") as fh:
-        mapping = yaml.safe_load(fh) or {}
-    elements = mapping.get("elements") or {}
-    unknown = sorted(set(elements) - set(ELEMENTS))
-    if unknown:
-        raise ConfigError(f"mapping has unknown element(s) {unknown}; known: {ELEMENTS}")
-    for name, m in elements.items():
-        if not isinstance(m, dict) or not m.get("dataElement"):
-            raise ConfigError(f"mapping.elements.{name} needs a dataElement UID")
-    return mapping
-
-
-def datavalueset(tidy: pd.DataFrame, mapping: dict) -> dict:
-    elements = mapping.get("elements") or {}
-    unmapped = [e for e in ELEMENTS if e not in elements]
-    if unmapped:
-        log.info("not exported to dataValueSets (unmapped): %s", ", ".join(unmapped))
-    default_aoc = mapping.get("attributeOptionCombo")
-    values = []
-    for row in tidy[tidy["element"].isin(list(elements))].itertuples(index=False):
-        m = elements[row.element]
-        dv = {"dataElement": m["dataElement"], "period": row.period, "orgUnit": row.ou_uid}
-        if m.get("categoryOptionCombo"):
-            dv["categoryOptionCombo"] = m["categoryOptionCombo"]
-        aoc = m.get("attributeOptionCombo", default_aoc)
+def iter_datavalues(tidy: pd.DataFrame, resolved: dict) -> Iterator[dict]:
+    """DHIS2 dataValues for the mapped elements, in the order of `tidy`."""
+    elements, bands = resolved["elements"], resolved["age_bands"]
+    aoc, skip_zeros = resolved.get("attributeOptionCombo"), resolved.get("skip_zeros", False)
+    rows = tidy[tidy["element"].isin(list(elements))]
+    if skip_zeros:
+        rows = rows[rows["value"] != 0]
+    for row in rows.itertuples(index=False):
+        dv = {"dataElement": elements[row.element], "period": str(row.period), "orgUnit": row.ou_uid,
+              "categoryOptionCombo": bands[row.age_band]}
         if aoc:
             dv["attributeOptionCombo"] = aoc
         dv["value"] = str(row.value)
-        values.append(dv)
-    out = {"dataValues": values}
-    if mapping.get("dataSet"):
-        out = {"dataSet": mapping["dataSet"], **out}
-    return out
+        yield dv
 
 
-def write_datavalues_json(tidy: pd.DataFrame, mapping: dict, path: Path) -> None:
+def write_datavalues_json(tidy: pd.DataFrame, resolved: dict, path: Path) -> int:
+    """Write a dataValueSets payload, one value per line (streamed: the CIV payload has millions)."""
+    n = 0
     with path.open("w", encoding="utf-8", newline="\n") as fh:
-        json.dump(datavalueset(tidy, mapping), fh, indent=1)
+        fh.write("{")
+        if resolved.get("dataSet"):
+            fh.write(f'"dataSet":{json.dumps(resolved["dataSet"])},')
+        fh.write('"dataValues":[')
+        for dv in iter_datavalues(tidy, resolved):
+            fh.write(("\n" if n == 0 else ",\n") + json.dumps(dv, separators=(",", ":")))
+            n += 1
+        fh.write("\n]}\n")
+    return n
+
+
+def write_resolved_mapping(resolved: dict, path: Path) -> None:
+    with path.open("w", encoding="utf-8", newline="\n") as fh:
+        yaml.safe_dump(resolved, fh, sort_keys=False, allow_unicode=True)
 
 
 # --- ground truth -----------------------------------------------------------------
@@ -145,7 +137,7 @@ def write_input_snapshots(out_dir: Path, pyramid: Pyramid, observed_population: 
 
 
 def write_run_params(cfg: Config, pyramid: Pyramid, path: Path, dhis2: dict | None = None,
-                     snapshots: dict[str, Path] | None = None) -> None:
+                     snapshots: dict[str, Path] | None = None, mapping: dict | None = None) -> None:
     """`dhis2` holds the instance URL and credential source actually used, never credentials."""
     inputs = {
         "pyramid": cfg.pyramid.path,
@@ -161,6 +153,7 @@ def write_run_params(cfg: Config, pyramid: Pyramid, path: Path, dhis2: dict | No
         "code_version": code_version(),
         "config": cfg.to_dict(),
         "dhis2": dhis2,
+        "dhis2_mapping": ({k: v for k, v in mapping.items() if k != "details"} if mapping else None),
         "input_sha256": {k: _sha256(v) for k, v in inputs.items() if v},
         "input_snapshot_sha256": {k: _sha256(str(v)) for k, v in (snapshots or {}).items()},
         "pyramid_summary": {
@@ -193,7 +186,7 @@ def summary_by_unit_year(result: SimulationResult, care_seeking: float) -> pd.Da
         confirmed=("confirmed", "sum"),
     )
     fac_tot = (f.rename(columns={"pop_unit": "unit"})
-               .groupby(["unit", "year"])[["tested_total", "suspected", "act_treated", "severe", "deaths"]].sum())
+               .groupby(["unit", "year"])[["tested_total", "suspected", "presumed", "confirmed_severe", "deaths"]].sum())
     fac_tot.index.names = ["ou_uid", "year"]
     s = unit_tot.join(fac_tot)
     s["reported_incidence_per_1000"] = s["confirmed"] / s["exposure"] * 1000
@@ -233,6 +226,13 @@ def _md_table(df: pd.DataFrame, floatfmt: str = "{:.3f}") -> str:
     sep = "| " + " | ".join("---" for _ in df.columns) + " |"
     rows = ["| " + " | ".join(fmt(v) for v in row) + " |" for row in df.itertuples(index=False)]
     return "\n".join([head, sep, *rows])
+
+
+def totals_by_band(result: SimulationResult, bands: list[str]) -> pd.DataFrame:
+    f = result.facilities
+    rows = [{"element": e, **{b: int(f[band_column(e, b)].sum()) for b in bands}, "total": int(f[e].sum())}
+            for e in ELEMENTS]
+    return pd.DataFrame(rows)
 
 
 def write_report(cfg: Config, pyramid: Pyramid, result: SimulationResult, out_dir: Path) -> None:
@@ -282,12 +282,14 @@ def write_report(cfg: Config, pyramid: Pyramid, result: SimulationResult, out_di
         f"- Facilities with zero confirmed cases in every month: {int((per_fac_zero == 1).sum())} of {len(per_fac_zero)}",
         f"- Median share of zero-confirmed months per facility: {per_fac_zero.median():.3f}",
         "",
-        "## Stocks",
+        "## Reported totals by element and age band",
         "",
-        f"- Facility-months with RDT shortfall (unmet > 0): {float((f['unmet_rdt'] > 0).mean()):.3f}",
-        f"- Facility-months with ACT shortfall (unmet > 0): {float((f['unmet_act'] > 0).mean()):.3f}",
-        f"- Facility-months ending with zero RDT stock: {float((f['stock_rdt_end'] == 0).mean()):.3f}",
-        f"- Facility-months ending with zero ACT stock: {float((f['stock_act_end'] == 0).mean()):.3f}",
+        _md_table(totals_by_band(result, cfg.rates.bands)),
+        "",
+        f"- Severe share of confirmed cases: {f['confirmed_severe'].sum() / max(f['confirmed'].sum(), 1):.3f}",
+        f"- Presumed share of untested suspected cases: "
+        f"{f['presumed'].sum() / max((f['suspected'] - f['tested_total']).sum(), 1):.3f}",
+        f"- Presumed cases per confirmed case: {f['presumed'].sum() / max(f['confirmed'].sum(), 1):.3f}",
         "",
     ]
     (out_dir / "summary_report.md").write_text("\n".join(lines), encoding="utf-8", newline="\n")

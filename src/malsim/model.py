@@ -1,7 +1,7 @@
 """The v1 generative model.
 
 Each step is its own function on plain arrays, so later versions can swap one
-step (seasonal month weights, stock feedback on testing, missing reports)
+step (seasonal month weights, missing reports, error injection)
 without touching the others. Arrays are shaped (units, months) or
 (facilities, months).
 
@@ -17,7 +17,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
-from .config import AllocationConfig, Config, ConfigError, RatesConfig
+from .config import AllocationConfig, Config, ConfigError
 from .pyramid import Pyramid
 
 # Stable stream ids: never renumber, only append.
@@ -29,23 +29,23 @@ STREAMS = {
     "act": 5,
     "severe": 6,
     "deaths": 7,
+    "presumed": 8,
 }
 
-# Facility-level elements, in output order.
+# Reported elements, in output order. Each is split by age band (a DHIS2 category option combo).
 ELEMENTS = [
-    "confirmed",
-    "confirmed_u5",
-    "confirmed_5plus",
-    "tested_total",
-    "tested_microscopy",
-    "tested_rdt",
     "suspected",
-    "act_treated",
-    "severe",
-    "deaths",
-    "stock_rdt_end",
-    "stock_act_end",
+    "presumed",
+    "confirmed_simple",
+    "confirmed_severe",
 ]
+
+# Quantities simulated per age band (kept in the ground truth as `<name>__<band>`).
+BAND_QUANTITIES = ["confirmed", "tested", "suspected", "presumed", "confirmed_simple", "confirmed_severe"]
+
+
+def band_column(name: str, band: str) -> str:
+    return f"{name}__{band}"
 
 
 def rng_for(seed: int, step: str) -> np.random.Generator:
@@ -118,9 +118,18 @@ def allocate(confirmed: np.ndarray, unit_index: np.ndarray, weights: np.ndarray,
 
 # --- step 4: facility elements, all derived from confirmed ---------------------
 
-def split_age(confirmed: np.ndarray, u5_share: float, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
-    u5 = rng.binomial(confirmed, u5_share)
-    return u5, confirmed - u5
+# Per-band arrays are shaped (bands, facilities, months).
+
+def split_age(confirmed: np.ndarray, shares: list[float], rng: np.random.Generator) -> np.ndarray:
+    """Multinomial split of each facility-month count across the age bands."""
+    p = np.asarray(shares, dtype=float)
+    draws = rng.multinomial(confirmed, p / p.sum())  # shape confirmed.shape + (bands,)
+    return np.moveaxis(draws, -1, 0).astype(np.int64)
+
+
+def severe_cases(confirmed_b: np.ndarray, severe_rates: list[float], rng: np.random.Generator) -> np.ndarray:
+    rates = np.asarray(severe_rates, dtype=float).reshape(-1, *([1] * (confirmed_b.ndim - 1)))
+    return rng.binomial(confirmed_b, rates)
 
 
 def tested_from_confirmed(confirmed: np.ndarray, positivity: float) -> np.ndarray:
@@ -137,47 +146,18 @@ def suspected_from_tested(tested: np.ndarray, testing_rate: float) -> np.ndarray
     return round_half_up(tested / testing_rate)
 
 
+def presumed_cases(suspected: np.ndarray, tested: np.ndarray, presumed_rate: float,
+                   rng: np.random.Generator) -> np.ndarray:
+    """Untested suspected cases managed as severe malaria without confirmation (présumé)."""
+    return rng.binomial(suspected - tested, presumed_rate)
+
+
 def treat(confirmed: np.ndarray, act_rate: float, rng: np.random.Generator) -> np.ndarray:
     return rng.binomial(confirmed, act_rate)
 
 
-def severe_cases(confirmed: np.ndarray, severe_rate: float, rng: np.random.Generator) -> np.ndarray:
-    return rng.binomial(confirmed, severe_rate)
-
-
 def deaths_from_severe(severe: np.ndarray, cfr: float, rng: np.random.Generator) -> np.ndarray:
     return rng.binomial(severe, cfr)
-
-
-# --- step 5: stocks -------------------------------------------------------------
-
-def expected_use(expected_fac: np.ndarray, micro_share: np.ndarray, rates: RatesConfig) -> tuple[np.ndarray, np.ndarray]:
-    """Expected monthly RDT and ACT consumption per facility (no randomness)."""
-    rdt = expected_fac / rates.positivity * (1.0 - micro_share[:, None])
-    act = expected_fac * rates.act_rate
-    return rdt, act
-
-
-def simulate_stock(use: np.ndarray, expected: np.ndarray, start_months: float,
-                   delivery_factor: float) -> dict[str, np.ndarray]:
-    """Stock balance: end = max(0, start + delivery - use); next start = end.
-
-    Starting stock covers `start_months` of the first month's expected use;
-    deliveries are deterministic, `delivery_factor` x that month's expected use.
-    In v1 stock never constrains use; any shortfall is recorded as `unmet`.
-    """
-    delivery = round_half_up(expected * delivery_factor)
-    start = np.zeros_like(use)
-    end = np.zeros_like(use)
-    unmet = np.zeros_like(use)
-    s = round_half_up(start_months * expected[:, 0])
-    for m in range(use.shape[1]):
-        start[:, m] = s
-        available = s + delivery[:, m]
-        end[:, m] = np.maximum(0, available - use[:, m])
-        unmet[:, m] = np.maximum(0, use[:, m] - available)
-        s = end[:, m]
-    return {"start": start, "delivery": delivery, "end": end, "unmet": unmet}
 
 
 # --- orchestration ---------------------------------------------------------------
@@ -220,18 +200,25 @@ def simulate(cfg: Config, pyramid: Pyramid, pop_by_year: pd.DataFrame, incidence
     confirmed = allocate(confirmed_u, unit_index, alloc_w, rng_for(seed, "allocation"))
     expected_f = expected_u[unit_index] * alloc_w[:, None]
 
-    u5, o5 = split_age(confirmed, rates.u5_share, rng_for(seed, "age"))
-    tested = tested_from_confirmed(confirmed, rates.positivity)
-    micro, rdt = split_test_method(tested, micro_share, rng_for(seed, "microscopy"))
-    suspected = suspected_from_tested(tested, rates.testing_rate)
-    act = treat(confirmed, rates.act_rate, rng_for(seed, "act"))
-    severe = severe_cases(confirmed, rates.severe_rate, rng_for(seed, "severe"))
-    deaths = deaths_from_severe(severe, rates.cfr, rng_for(seed, "deaths"))
+    # Per age band: everything derives from the band's confirmed cases.
+    bands = rates.bands
+    by_band: dict[str, np.ndarray] = {}
+    by_band["confirmed"] = split_age(confirmed, rates.band_shares, rng_for(seed, "age"))
+    by_band["confirmed_severe"] = severe_cases(by_band["confirmed"], [rates.severe_rate_for(b) for b in bands],
+                                               rng_for(seed, "severe"))
+    by_band["confirmed_simple"] = by_band["confirmed"] - by_band["confirmed_severe"]
+    by_band["tested"] = tested_from_confirmed(by_band["confirmed"], rates.positivity)
+    by_band["suspected"] = suspected_from_tested(by_band["tested"], rates.testing_rate)
+    by_band["presumed"] = presumed_cases(by_band["suspected"], by_band["tested"], rates.presumed_rate,
+                                         rng_for(seed, "presumed"))
+    totals = {name: arr.sum(axis=0) for name, arr in by_band.items()}
 
-    exp_rdt, exp_act = expected_use(expected_f, micro_share, rates)
-    st = cfg.stocks
-    rdt_stock = simulate_stock(rdt, exp_rdt, st.stock_start_months, st.delivery_factor)
-    act_stock = simulate_stock(act, exp_act, st.stock_start_months, st.delivery_factor)
+    # Ground truth only (not reported to DHIS2).
+    tested = totals["tested"]
+    micro, rdt = split_test_method(tested, micro_share, rng_for(seed, "microscopy"))
+    act = treat(confirmed, rates.act_rate, rng_for(seed, "act"))
+    deaths = deaths_from_severe(totals["confirmed_severe"], rates.cfr, rng_for(seed, "deaths"))
+    band_cols = {band_column(name, b): by_band[name][i] for name in BAND_QUANTITIES for i, b in enumerate(bands)}
 
     units_df = _long(units, periods, {
         "pop": pop,
@@ -248,24 +235,15 @@ def simulate(cfg: Config, pyramid: Pyramid, pop_by_year: pd.DataFrame, incidence
         "micro_share": micro_share,
         "expected_cases": expected_f,
         "confirmed": confirmed,
-        "confirmed_u5": u5,
-        "confirmed_5plus": o5,
+        "confirmed_simple": totals["confirmed_simple"],
+        "confirmed_severe": totals["confirmed_severe"],
         "tested_total": tested,
         "tested_microscopy": micro,
         "tested_rdt": rdt,
-        "suspected": suspected,
+        "suspected": totals["suspected"],
+        "presumed": totals["presumed"],
         "act_treated": act,
-        "severe": severe,
         "deaths": deaths,
-        "stock_rdt_start": rdt_stock["start"],
-        "delivery_rdt": rdt_stock["delivery"],
-        "expected_use_rdt": exp_rdt,
-        "stock_rdt_end": rdt_stock["end"],
-        "unmet_rdt": rdt_stock["unmet"],
-        "stock_act_start": act_stock["start"],
-        "delivery_act": act_stock["delivery"],
-        "expected_use_act": exp_act,
-        "stock_act_end": act_stock["end"],
-        "unmet_act": act_stock["unmet"],
+        **band_cols,
     })
     return SimulationResult(periods, units_df, fac_df)

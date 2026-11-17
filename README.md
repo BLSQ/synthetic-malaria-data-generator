@@ -2,13 +2,14 @@
 
 ## What it does
 
-malsim takes the real list of health facilities from a DHIS2 instance and creates made-up but realistic monthly malaria data for each of them, as if every facility had reported its cases, tests, treatments, severe cases, deaths and stock levels every month.
+malsim takes the real list of health facilities from a DHIS2 instance and creates made-up but realistic monthly malaria data for each of them, as if every facility had reported its suspected, presumed, confirmed simple and confirmed severe malaria cases, by age group, every month. It can then push that data into a DHIS2 instance.
 
 It's meant for testing: the national malaria data repository, the SNT toolkit and data-quality services. You get data that looks like the real thing, without touching any real reported values. And because the data is simulated, the correct answer is always known.
 
-There are two commands, both runnable locally or as the OpenHEXA pipeline's `mode`:
-- **`inspect`** checks the inputs before a run and changes nothing. It reports how many facilities were found and how they're typed, which districts have population and for which years, whether every district has a boundary, and the range of incidence values.
+There are three commands, all runnable locally or as the OpenHEXA pipeline's `mode`:
+- **`inspect`** checks the inputs before a run and changes nothing. It reports how many facilities were found and how they're typed, which districts have population and for which years, whether every district has a boundary, and the range of incidence values. With a DHIS2 mapping, it also shows the data elements and age categories it found on the instance, and how many facilities are not assigned to the data set.
 - **`generate`** runs the simulation and writes all the outputs described below.
+- **`push`** sends the generated values to DHIS2. It is a dry run unless asked to commit.
 
 ## What data it uses
 
@@ -26,57 +27,52 @@ No real malaria data values are read.
 1. **Expected cases** per district and month = population × annual incidence ÷ 12 × the share of sick people who seek care (60%).
 2. **Confirmed cases** are drawn at random around that expectation (a Poisson draw), which gives natural month-to-month variation.
 3. **Cases are shared out among the district's facilities** at random, weighted by facility type. For example, a district hospital gets three times the share of a rural health centre. Opticians and dental practices get weight 0 and are left out.
-4. **Every other number follows from the confirmed cases** at fixed rates:
-   - 40% of cases are children under 5;
+4. **Each confirmed case gets an age group** at random (40% under 5, 60% aged 5 and over; the groups match the DHIS2 age categories). Everything below is computed separately within each age group.
+5. **Every other number follows from the confirmed cases** at fixed rates:
+   - 3% of confirmed cases are severe (8% for children under 5); the rest are simple;
    - 45% of tests are positive, which gives the number tested;
    - 90% of suspected cases are tested, which gives the number suspected;
-   - microscopy is 30% of tests in hospitals and 20% in clinics; all other tests are RDTs;
-   - 95% of cases get an ACT;
-   - 5% are severe, and 2% of severe cases die.
-5. **RDT and ACT stocks** start at two months of expected use, and receive a delivery equal to the expected use every month.
+   - 30% of the suspected cases that weren't tested are managed as severe malaria without confirmation: these are the **presumed** (présumé) cases;
+   - in the answer key only: microscopy is 30% of tests in hospitals and 20% in clinics (the rest RDTs), 95% of confirmed cases get an ACT, and 2% of severe cases die.
 
 The main assumptions and simplifications in this version:
 - **No seasonality:** every month of a year has the same expected number of cases.
 - **Incidence is fixed** at one baseline year (2023 for Côte d'Ivoire) for the whole period. Only population changes over time.
 - **Every facility reports every month.** There are no missing reports, late reports or data-entry errors yet.
-- **Stockouts have no effect:** a facility keeps testing and treating even when stock runs out, and the shortfall is only recorded. There's no presumptive treatment.
-- **The facility-type weights and microscopy shares are working assumptions**, to be reviewed with the programme.
-- **The numbers always add up:** under-5 plus 5 and over equals the total, and confirmed ≤ tested ≤ suspected.
+- **No logistics:** stocks aren't simulated.
+- **The age shares, severe and presumed rates, facility-type weights and microscopy shares are working assumptions**, to be reviewed with the programme.
+- **The numbers always add up**, in each age group and in total: simple + severe = confirmed, confirmed ≤ tested ≤ suspected, and presumed ≤ suspected − tested.
 
 The same config, inputs and random seed always give exactly the same data.
 
 ## What it produces
 
-- **`datavalues.csv`, the dataset.** This is what DHIS2 would contain: one row per facility, month, data element and value, which is what a tool under test gets to see. With a DHIS2 mapping, `datavalues.json` holds the same values in a form DHIS2 can import.
+- **`datavalues.csv`, the dataset.** This is what DHIS2 would contain: one row per facility, month, data element, age group and value, which is what a tool under test gets to see. With a DHIS2 mapping, `datavalues.json` holds the same values in a form DHIS2 can import, and `dhis2_mapping.yaml` the DHIS2 IDs used.
 - **`ground_truth.parquet`, the answer key.** It holds the true values behind the dataset, plus everything that's never reported:
   - per district: population, input incidence and expected cases;
-  - per facility: its share of district cases, its expected cases, and its stock deliveries, expected use and unmet need.
+  - per facility: its share of district cases, its expected cases, and the unreported counts (tests by method, ACT treatments, deaths), in total and by age group.
 
   In this version the reported values equal the true ones, because no errors are added yet. Once later versions add missing reports and errors, the dataset will differ from the ground truth. Comparing a tool's output with the ground truth then shows how well it recovered what really happened: did a data-quality check flag the injected errors? Does an incidence estimate match the input?
-- **`run_params.yaml`:** every setting used, the seed, the code version, and fingerprints (hashes) of the inputs, so a run can be traced and repeated.
-- **`summary_report.md`, with CSV tables:** totals per year, simulated vs input incidence per district, results by facility type, how often months are zero, and stock shortfalls.
+- **`run_params.yaml`:** every setting used, the seed, the code version, the DHIS2 IDs, and fingerprints (hashes) of the inputs, so a run can be traced and repeated.
+- **`summary_report.md`, with CSV tables:** totals per year, simulated vs input incidence per district, results by facility type, totals by element and age group, and how often months are zero.
 - **`inputs/`:** copies of the inputs as read (facilities, population, district boundaries, incidence per district).
 
 ### Indicators produced
 
-One value per facility and month, in `datavalues.csv` (column `element`):
+One value per facility, month and age group (`u5`, `5plus`), in `datavalues.csv` (columns `element`, `age_band`). In DHIS2 the age group is the category option combo.
 
-| Element | What it is | How it is derived |
+| Element | DHIS2 data element (Côte d'Ivoire) | How it is derived, per age group |
 |---|---|---|
-| `confirmed` | Confirmed malaria cases | Facility's share of the district's Poisson-drawn cases |
-| `confirmed_u5` | Confirmed cases, under 5 | Binomial(confirmed, `u5_share`) |
-| `confirmed_5plus` | Confirmed cases, 5 and over | confirmed − confirmed_u5 |
-| `tested_total` | Suspected cases tested | confirmed ÷ `positivity`, rounded |
-| `tested_microscopy` | Tested by microscopy | Binomial(tested_total, microscopy share of the facility type) |
-| `tested_rdt` | Tested by RDT | tested_total − tested_microscopy |
-| `suspected` | Suspected malaria cases | tested_total ÷ `testing_rate`, rounded |
-| `act_treated` | Confirmed cases treated with an ACT | Binomial(confirmed, `act_rate`) |
-| `severe` | Severe malaria cases | Binomial(confirmed, `severe_rate`) |
-| `deaths` | Malaria deaths | Binomial(severe, `cfr`) |
-| `stock_rdt_end` | RDTs in stock at month end | max(0, opening stock + delivery − tested_rdt) |
-| `stock_act_end` | ACT treatments in stock at month end | max(0, opening stock + delivery − act_treated) |
+| `suspected` | Nombre de cas suspect de paludisme | tested ÷ `testing_rate`, rounded |
+| `presumed` | Nombre de cas présumé de paludisme | Binomial(suspected − tested, `presumed_rate`) |
+| `confirmed_simple` | Nombre de cas confirmé de paludisme simple | confirmed − confirmed_severe |
+| `confirmed_severe` | Nombre de cas confirmé de paludisme grave | Binomial(confirmed, severe rate of the age group) |
+
+where confirmed = the facility's share of the district's Poisson-drawn cases, split by age with a Multinomial(`age_bands` shares), and tested = confirmed ÷ `positivity`, rounded.
 
 `datavalues.json` contains only the elements listed in the DHIS2 mapping file.
+
+Changing the age groups or adding the presumed cases changed the random draws: data from earlier versions of malsim isn't reproduced by this one with the same seed.
 
 The sections below are the technical reference.
 
@@ -98,11 +94,39 @@ Input rasters are not in the repository. For the Côte d'Ivoire example, downloa
 Before a real run, check the inputs (read-only):
 
 ```bash
-malsim inspect --config examples/civ/config.yaml --population-de ep7dbOseL68
+malsim inspect --config examples/civ/config.yaml
 ```
 
 It lists the levels, group sets, facilities mapped and closed, population coverage per
-year, polygon coverage and the range of raster incidence per unit.
+year, polygon coverage and the range of raster incidence per unit. With a mapping, it also
+lists each data element with its category combo and option combos, which age band maps to
+which, and how many simulated facilities are not assigned to the data set (DHIS2 rejects
+their values).
+
+Then generate, and push. `push` sends `datavalues.csv` from a generate run's output dir
+(with the IDs in its `dhis2_mapping.yaml`) to `/api/dataValueSets` in chunks of 50,000,
+with `importStrategy=CREATE_AND_UPDATE`, so pushing again overwrites rather than duplicates.
+Without `--commit` it is a dry run: DHIS2 checks every value and reports what it would do,
+but stores nothing. The import counts and conflicts go to `push_report_dryrun.yaml` /
+`push_report.yaml`; it stops after 3 chunks with conflicts.
+
+```bash
+malsim generate --config examples/civ/config.yaml
+```
+
+```bash
+malsim push --config examples/civ/config.yaml
+```
+
+```bash
+malsim push --config examples/civ/config.yaml --commit
+```
+
+The Côte d'Ivoire example targets the demo instance `nmdr-test`: the 4 `EPI - ` case
+elements with category combo "groupe age 5", in data set "Module 1 - EPI". Population comes
+from `data/civ/population_nmdr.csv` (the NMDR instance's district population, from an earlier
+run's `inputs/population_observed.csv`), since the demo instance has none. The elements are
+mapped by UID because their accented names are stored double-encoded on that instance.
 
 ## Inputs (all set in the YAML config)
 
@@ -115,11 +139,12 @@ year, polygon coverage and the range of raster incidence per unit.
 | Baseline incidence | `incidence.source` = `csv` / `raster` | CSV `ou_uid, incidence_per_1000`, or a raster (`incidence.raster_path`) reduced to each population unit by zonal mean over its polygon (`all_touched`). Needs `pip install -e ".[raster]"`; `raster_scale` converts to per 1000/year (MAP rasters: 1000) |
 | Population unit geometries (raster only) | `incidence.geometry_source` = `dhis2` / `file` | `dhis2`: org unit geometries from the Web API (Polygon / MultiPolygon only). `file`: GeoJSON FeatureCollection at `incidence.geometry_path`, with the org unit UID in the property named by `incidence.id_property` (default `id`, which also matches the feature's own `id`, as in DHIS2 GeoJSON exports). A population unit with facilities but no polygon gets no incidence, and the run stops with an error |
 | Closed facilities | `pyramid.drop_closed_before_start` | facilities with a `closedDate` before `run.start` are dropped (default true) |
-| DHIS2 mapping (optional) | `mapping` | YAML element -> `dataElement` / `categoryOptionCombo`; see `examples/tiny/mapping.yaml` |
+| Age groups | `rates.age_bands` | ordered `{band, share}` list, shares sum to 1; each band maps to a category option combo |
+| DHIS2 mapping (optional) | `mapping` | YAML: element -> data element, age band -> category option combo, plus data set and attribute option combo, each by UID or exact name (see `src/malsim/mapping.py`, `examples/civ/mapping.yaml`). Names are resolved against the instance |
 
 DHIS2 credentials never go in the YAML. Locally they come from environment variables
 (`DHIS2_USERNAME` / `DHIS2_PASSWORD` or `DHIS2_TOKEN`; the names are set under `dhis2`,
-e.g. `CIV_NMDR_USERNAME` in `examples/civ/config.yaml`). On OpenHEXA they come from the
+e.g. `NMDR_TEST_USERNAME` in `examples/civ/config.yaml`). On OpenHEXA they come from the
 workspace DHIS2 connection, and the env vars and `dhis2.url` are not used.
 `run_params.yaml` records the URL and the credential source, never the credentials.
 
@@ -136,14 +161,10 @@ Per population unit u and month m:
 2. `confirmed[u, m] ~ Poisson(expected_cases)`.
 3. Multinomial allocation to the unit's facilities, weights by facility type (normalised within the unit).
 
-Per facility, all elements derive from `confirmed` (see `model.py`), so the
-invariants hold by construction and are also checked on every run
-(`invariants.py`; a violation stops the run).
-
-Stocks: start = `stock_start_months` x first month's expected use; delivery each
-month = `delivery_factor` x that month's expected use (deterministic, tracks
-population growth); `end = max(0, start + delivery - use)`. Stock does not
-constrain use in v1; shortfalls are kept in the ground truth as `unmet_rdt` / `unmet_act`.
+Per facility, `confirmed` is split across the age bands (Multinomial), and every
+element derives from each band's confirmed cases (see `model.py`); facility totals are
+the sums over bands. So the invariants hold by construction, in each band and in total,
+and are also checked on every run (`invariants.py`; a violation stops the run).
 
 Each random step has its own RNG stream (`model.STREAMS`), so adding steps later
 does not change the draws of existing ones.
@@ -155,14 +176,17 @@ Notes:
 
 ## Outputs (in `output.dir`)
 
-- `datavalues.csv`: `ou_uid, period, element, value` (period `YYYYMM`).
-- `datavalues.json`: DHIS2 `dataValueSets` payload, mapped elements only (when `mapping` is set).
+- `datavalues.csv`: `ou_uid, period, element, age_band, value` (period `YYYYMM`).
+- `datavalues.json`: DHIS2 `dataValueSets` payload, mapped elements only (when `mapping` is set),
+  one value per line. Zeros are included unless the mapping sets `skip_zeros: true`.
+- `dhis2_mapping.yaml`: the mapping resolved to UIDs on the instance, used by `push`.
 - `ground_truth.parquet`: one row per population unit x month and facility x month
   (`role` column): population, incidence, month weight, expected cases, allocation
-  weight, microscopy share, all elements, stock starts, deliveries, expected use, shortfalls.
-- `run_params.yaml`: resolved config, seed, code version, SHA-256 of input files.
+  weight, microscopy share, totals (reported and not), and per band `<quantity>__<band>`.
+- `run_params.yaml`: resolved config, seed, code version, DHIS2 mapping, SHA-256 of input files.
 - `summary_report.md`, `summary_by_unit_year.csv`, `summary_zero_months.csv`:
-  totals per unit/year, implied incidence vs input, share of zero months, stock shortfalls.
+  totals per unit/year, implied incidence vs input, totals by element and band, share of zero months.
+- After `push`: `push_report_dryrun.yaml` or `push_report.yaml`.
 
 ## OpenHEXA
 
@@ -177,8 +201,10 @@ Notes:
    openhexa pipelines push build/openhexa
    ```
 
-4. Run it from the web interface: pick the connection, set `population_de`, and run
-   `mode: inspect` first, then `mode: generate`. Outputs go to `output_dir` in workspace Files.
+4. Run it from the web interface with the connection (`nmdr-test` for the Côte d'Ivoire
+   example): `mode: inspect` first, then `mode: generate`, then `mode: push` (a dry run),
+   and `mode: push` with `commit` ticked. `push` reads the outputs of the generate run in
+   the same `output_dir`. Outputs go to `output_dir` in workspace Files.
 
 Notebook (same code, faster to iterate), with the bundle's `malsim/` folder uploaded next to the notebook:
 
@@ -186,21 +212,23 @@ Notebook (same code, faster to iterate), with the bundle's `malsim/` folder uplo
 from openhexa.sdk import workspace
 from malsim.dhis2 import Dhis2Client
 from malsim.inspect import inspect
+from malsim.push import push
 from malsim.run import generate, resolve_config
 
-con = workspace.dhis2_connection("<connection-slug>")
+con = workspace.dhis2_connection("nmdr-test")
 client = Dhis2Client(con.url, username=con.username, password=con.password, source="openhexa_connection")
 cfg_path = f"{workspace.files_path}/malsim/examples/civ/config.yaml"
-inspect(resolve_config(cfg_path, population_de="ep7dbOseL68"), client)
-generate(cfg_path, population_de="ep7dbOseL68", client=client, out_dir=f"{workspace.files_path}/malsim/output/civ")
+out = f"{workspace.files_path}/malsim/output/civ"
+inspect(resolve_config(cfg_path), client)
+generate(cfg_path, client=client, out_dir=out)
+push(out, client)                # dry run
+# push(out, client, commit=True)
 ```
 
-The pipeline and the notebook snippet have not been run on OpenHEXA yet.
+The `push` mode and the notebook snippet have not been run on OpenHEXA yet.
 
 ## Extending (later versions)
 
 - Seasonality: replace `model.month_weight` (or pass another `weight_fn` to `month_weight_matrix`).
-- Stockout feedback: make `split_test_method` / `treat` take available stock, and run the
-  stock loop month by month.
 - Missing reports / error injection: a post-processing step on `SimulationResult.facilities`
   before writing, with its own RNG stream.

@@ -23,7 +23,8 @@ def test_defaults_fill_in():
     assert cfg.rates.positivity == 0.45
     assert cfg.micro_share.get("anything") == 0.0
     assert cfg.allocation_weights.get("anything") == 1.0
-    assert cfg.stocks.stock_start_months == 2
+    assert cfg.rates.bands == ["u5", "5plus"]
+    assert cfg.rates.presumed_rate == 0.3
 
 
 def test_example_config_resolves_relative_paths():
@@ -51,7 +52,11 @@ def test_missing_section_is_rejected():
     ("rates", "cfr", -0.1),
     ("run", "start", "2021-13"),
     ("run", "months", 0),
-    ("stocks", "delivery_factor", -1),
+    ("rates", "presumed_rate", 1.5),
+    ("rates", "age_bands", [{"band": "u5", "share": 0.4}, {"band": "5plus", "share": 0.5}]),
+    ("rates", "age_bands", [{"band": "u5", "share": 0.5}, {"band": "u5", "share": 0.5}]),
+    ("rates", "age_bands", []),
+    ("rates", "severe_rate_by_band", {"u1": 0.1}),
 ])
 def test_invalid_values_are_rejected(section, key, value):
     with pytest.raises(ConfigError):
@@ -77,3 +82,9 @@ def test_raster_with_dhis2_geometry_needs_no_geometry_path():
     assert cfg.incidence.geometry_path is None
     with pytest.raises(ConfigError, match="geometry_path"):
         from_dict(minimal(incidence={"source": "raster", "raster_path": "x.tif"}))
+
+
+@pytest.mark.parametrize("old", [{"rates": {"u5_share": 0.4}}, {"stocks": {"delivery_factor": 1.0}}])
+def test_removed_keys_are_rejected(old):
+    with pytest.raises(ConfigError, match="unknown key"):
+        from_dict(minimal(**old))

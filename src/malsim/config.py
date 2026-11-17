@@ -71,15 +71,35 @@ class IncidenceConfig:
     raster_scale: float = 1.0  # multiplier converting raster values to cases per 1000 per year
 
 
+def _default_age_bands() -> list[dict[str, Any]]:
+    return [{"band": "u5", "share": 0.4}, {"band": "5plus", "share": 0.6}]
+
+
 @dataclass
 class RatesConfig:
     care_seeking: float = 0.6
-    u5_share: float = 0.4
     positivity: float = 0.45
     testing_rate: float = 0.9
     act_rate: float = 0.95
-    severe_rate: float = 0.05
-    cfr: float = 0.02
+    severe_rate: float = 0.05  # share of confirmed cases that are severe (default for every band)
+    severe_rate_by_band: dict[str, float] = field(default_factory=dict)  # optional per-band override
+    # Share of untested suspected cases managed as severe malaria without confirmation (présumé).
+    presumed_rate: float = 0.3
+    cfr: float = 0.02  # deaths among confirmed severe cases
+    # Ordered age bands with their share of confirmed cases; the shares sum to 1.
+    # Each band is tied to a DHIS2 category option combo in the mapping file.
+    age_bands: list[dict[str, Any]] = field(default_factory=_default_age_bands)
+
+    @property
+    def bands(self) -> list[str]:
+        return [str(b["band"]) for b in self.age_bands]
+
+    @property
+    def band_shares(self) -> list[float]:
+        return [float(b["share"]) for b in self.age_bands]
+
+    def severe_rate_for(self, band: str) -> float:
+        return float(self.severe_rate_by_band.get(band, self.severe_rate))
 
 
 @dataclass
@@ -98,12 +118,6 @@ class AllocationConfig:
 
     def get(self, facility_type: str) -> float:
         return float(self.by_type.get(facility_type, self.default))
-
-
-@dataclass
-class StocksConfig:
-    stock_start_months: float = 2.0
-    delivery_factor: float = 1.0
 
 
 @dataclass
@@ -128,7 +142,6 @@ class Config:
     rates: RatesConfig = field(default_factory=RatesConfig)
     micro_share: MicroShareConfig = field(default_factory=MicroShareConfig)
     allocation_weights: AllocationConfig = field(default_factory=AllocationConfig)
-    stocks: StocksConfig = field(default_factory=StocksConfig)
     dhis2: Dhis2Config = field(default_factory=Dhis2Config)
     mapping: str | None = None  # YAML: element -> dataElement / categoryOptionCombo UIDs
     output: OutputConfig = field(default_factory=OutputConfig)
@@ -146,7 +159,6 @@ _NESTED: dict[tuple[type, str], type] = {
     (Config, "rates"): RatesConfig,
     (Config, "micro_share"): MicroShareConfig,
     (Config, "allocation_weights"): AllocationConfig,
-    (Config, "stocks"): StocksConfig,
     (Config, "dhis2"): Dhis2Config,
     (Config, "output"): OutputConfig,
     (PyramidConfig, "facility_type"): FacilityTypeConfig,
@@ -278,17 +290,24 @@ def validate(cfg: Config) -> None:
     for name in ("care_seeking", "positivity", "testing_rate"):
         v = getattr(rates, name)
         _check(0 < v <= 1, f"rates.{name} must be in (0, 1], got {v}")
-    for name in ("u5_share", "act_rate", "severe_rate", "cfr"):
+    for name in ("act_rate", "severe_rate", "presumed_rate", "cfr"):
         v = getattr(rates, name)
         _check(0 <= v <= 1, f"rates.{name} must be in [0, 1], got {v}")
+    _check(isinstance(rates.age_bands, list) and bool(rates.age_bands), "rates.age_bands must be a non-empty list")
+    for i, b in enumerate(rates.age_bands):
+        _check(isinstance(b, dict) and set(b) == {"band", "share"},
+               f"rates.age_bands[{i}] must have exactly band and share")
+        _check(0 <= float(b["share"]) <= 1, f"rates.age_bands[{i}].share must be in [0, 1]")
+    _check(len(set(rates.bands)) == len(rates.bands), f"rates.age_bands has duplicate bands: {rates.bands}")
+    _check(abs(sum(rates.band_shares) - 1) < 1e-9, f"rates.age_bands shares must sum to 1, got {sum(rates.band_shares)}")
+    for band, v in rates.severe_rate_by_band.items():
+        _check(band in rates.bands, f"rates.severe_rate_by_band.{band} is not one of the age bands {rates.bands}")
+        _check(0 <= float(v) <= 1, f"rates.severe_rate_by_band.{band} must be in [0, 1], got {v}")
 
     for name, v in [("default", cfg.micro_share.default), *cfg.micro_share.by_type.items()]:
         _check(0 <= float(v) <= 1, f"micro_share.{name} must be in [0, 1], got {v}")
     for name, v in [("default", cfg.allocation_weights.default), *cfg.allocation_weights.by_type.items()]:
         _check(float(v) >= 0, f"allocation_weights.{name} must be >= 0, got {v}")
-
-    _check(cfg.stocks.stock_start_months >= 0, "stocks.stock_start_months must be >= 0")
-    _check(cfg.stocks.delivery_factor >= 0, "stocks.delivery_factor must be >= 0")
 
 
 def needs_api(cfg: Config) -> bool:

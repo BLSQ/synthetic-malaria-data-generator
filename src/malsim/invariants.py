@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 
 from .model import SimulationResult
@@ -20,32 +19,45 @@ def _bad(mask: pd.Series, df: pd.DataFrame, rule: str) -> list[str]:
     return [f"{rule}: {n} row(s) violate it, e.g. {first['ou_uid']} {first['period']}"]
 
 
-def _stock_balance(f: pd.DataFrame, item: str) -> list[str]:
-    start, end = f[f"stock_{item}_start"], f[f"stock_{item}_end"]
-    use = f["tested_rdt"] if item == "rdt" else f["act_treated"]
-    errors = _bad(end != np.maximum(0, start + f[f"delivery_{item}"] - use), f,
-                  f"stock_{item}_end = max(0, start + delivery - use)")
-    # Next month's start equals this month's end, within each facility.
-    prev_end = f.groupby("ou_uid", sort=False)[f"stock_{item}_end"].shift(1)
-    carried = prev_end.notna()
-    errors += _bad(carried & (start != prev_end), f, f"stock_{item}_start = previous stock_{item}_end")
-    return errors
+def _band_names(f: pd.DataFrame) -> list[str]:
+    prefix = "confirmed__"
+    return [c[len(prefix):] for c in f.columns if c.startswith(prefix)]
+
+
+def _counts(f: pd.DataFrame, band: str | None) -> dict[str, pd.Series]:
+    """The case counts for one age band, or the facility totals when band is None."""
+    def col(name: str, total: str | None = None) -> pd.Series:
+        return f[f"{name}__{band}"] if band is not None else f[total or name]
+    return {
+        "confirmed": col("confirmed"),
+        "tested": col("tested", "tested_total"),
+        "suspected": col("suspected"),
+        "presumed": col("presumed"),
+        "simple": col("confirmed_simple"),
+        "severe": col("confirmed_severe"),
+    }
 
 
 def violations(result: SimulationResult) -> list[str]:
     f = result.facilities.sort_values(["ou_uid", "period"], kind="stable")
     u = result.units
     errs: list[str] = []
-    errs += _bad(f["confirmed_u5"] + f["confirmed_5plus"] != f["confirmed"], f, "confirmed_u5 + confirmed_5plus = confirmed")
+    bands = _band_names(f)
+    for band in [None, *bands]:
+        c = _counts(f, band)
+        tag = f" [{band}]" if band is not None else ""
+        errs += _bad(c["simple"] + c["severe"] != c["confirmed"], f, f"confirmed_simple + confirmed_severe = confirmed{tag}")
+        errs += _bad(c["confirmed"] > c["tested"], f, f"confirmed <= tested{tag}")
+        errs += _bad(c["tested"] > c["suspected"], f, f"tested <= suspected{tag}")
+        errs += _bad(c["presumed"] > c["suspected"] - c["tested"], f, f"presumed <= suspected - tested{tag}")
+    for name, total in [("confirmed", "confirmed"), ("tested", "tested_total"), ("suspected", "suspected"),
+                        ("presumed", "presumed"), ("confirmed_simple", "confirmed_simple"),
+                        ("confirmed_severe", "confirmed_severe")]:
+        band_sum = sum((f[f"{name}__{b}"] for b in bands), pd.Series(0, index=f.index))
+        errs += _bad(band_sum != f[total], f, f"sum of {name} over age bands = {total}")
     errs += _bad(f["tested_rdt"] + f["tested_microscopy"] != f["tested_total"], f, "tested_rdt + tested_microscopy = tested_total")
-    errs += _bad(f["confirmed"] > f["tested_total"], f, "confirmed <= tested_total")
-    errs += _bad(f["tested_total"] > f["suspected"], f, "tested_total <= suspected")
     errs += _bad(f["act_treated"] > f["confirmed"], f, "act_treated <= confirmed")
-    errs += _bad(f["deaths"] > f["severe"], f, "deaths <= severe")
-    errs += _bad(f["severe"] > f["confirmed"], f, "severe <= confirmed")
-    for item in ("rdt", "act"):
-        errs += _bad(f[f"stock_{item}_end"] < 0, f, f"stock_{item}_end >= 0")
-        errs += _stock_balance(f, item)
+    errs += _bad(f["deaths"] > f["confirmed_severe"], f, "deaths <= confirmed_severe")
     count_cols = [c for c in f.columns if f[c].dtype.kind == "i"]
     neg = (f[count_cols] < 0).any(axis=1)
     errs += _bad(neg, f, "all counts >= 0")

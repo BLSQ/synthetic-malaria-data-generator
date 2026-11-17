@@ -12,6 +12,7 @@ import pandas as pd
 from . import invariants, outputs
 from .config import Config, load_config
 from .dhis2 import Dhis2Client, client_for
+from .mapping import load_mapping, resolve_mapping
 from .inputs import load_incidence, load_unit_geometries, project_population, read_population
 from .model import SimulationResult, make_periods, simulate
 from .pyramid import Pyramid, build_pyramid, drop_zero_weight, load_org_units
@@ -29,6 +30,7 @@ class Run:
     geometries: dict | None
     result: SimulationResult
     dhis2: dict | None = None  # instance URL and credential source used, never credentials
+    mapping: dict | None = None  # resolved DHIS2 mapping (UIDs), when a mapping is configured
 
 
 def run_overrides(seed: int | None = None, population_de: str | None = None) -> dict[str, Any] | None:
@@ -67,12 +69,17 @@ def prepare_and_simulate(cfg: Config, client: Dhis2Client | None = None) -> Run:
         geometries = load_unit_geometries(cfg.incidence, pyramid.pop_units, client)
     incidence = load_incidence(cfg.incidence, pyramid.pop_units, geometries)
 
+    # Resolve the mapping before simulating, so a bad mapping fails fast.
+    mapping = None
+    if cfg.mapping:
+        mapping = resolve_mapping(load_mapping(cfg.mapping), cfg.rates.bands, client)
+
     result = simulate(cfg, pyramid, population, incidence)
     invariants.check(result)
     dhis2 = None
     if client is not None:
         dhis2 = {"url": getattr(client, "base", None), "credential_source": getattr(client, "credential_source", None)}
-    return Run(cfg, pyramid, observed, population, incidence, geometries, result, dhis2)
+    return Run(cfg, pyramid, observed, population, incidence, geometries, result, dhis2, mapping)
 
 
 def write_outputs(run: Run, out_dir: Path) -> dict[str, Path]:
@@ -84,15 +91,18 @@ def write_outputs(run: Run, out_dir: Path) -> dict[str, Path]:
         "run_params": out_dir / "run_params.yaml",
         "report": out_dir / "summary_report.md",
     }
-    tidy = outputs.tidy_datavalues(result)
+    tidy = outputs.tidy_datavalues(result, cfg.rates.bands)
     outputs.write_datavalues_csv(tidy, files["datavalues_csv"])
-    if cfg.mapping:
+    if run.mapping is not None:
         files["datavalues_json"] = out_dir / "datavalues.json"
-        outputs.write_datavalues_json(tidy, outputs.load_mapping(cfg.mapping), files["datavalues_json"])
+        files["dhis2_mapping"] = out_dir / "dhis2_mapping.yaml"
+        n = outputs.write_datavalues_json(tidy, run.mapping, files["datavalues_json"])
+        outputs.write_resolved_mapping(run.mapping, files["dhis2_mapping"])
+        log.info("datavalues.json: %d values", n)
     outputs.write_ground_truth(result, files["ground_truth"])
     snapshots = outputs.write_input_snapshots(out_dir / "inputs", run.pyramid, run.observed_population,
                                               run.incidence, run.geometries)
-    outputs.write_run_params(cfg, run.pyramid, files["run_params"], run.dhis2, snapshots)
+    outputs.write_run_params(cfg, run.pyramid, files["run_params"], run.dhis2, snapshots, run.mapping)
     outputs.write_report(cfg, run.pyramid, result, out_dir)
     return files
 

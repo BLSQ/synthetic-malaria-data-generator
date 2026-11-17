@@ -1,4 +1,8 @@
-"""Minimal read-only DHIS2 Web API client (org units, group sets, geometries, analytics)."""
+"""Minimal DHIS2 Web API client.
+
+Reads org units, group sets, geometries, data values, analytics and data element / data set
+metadata. The only write is `post_data_values`, used by `malsim push`.
+"""
 
 from __future__ import annotations
 
@@ -107,6 +111,31 @@ class Dhis2Client:
         names = [h["name"] for h in data["headers"]]
         return [dict(zip(names, row)) for row in data.get("rows", [])]
 
+
+    def find(self, endpoint: str, ref: dict[str, str], fields: str) -> list[dict[str, Any]]:
+        """Objects of `endpoint` matching a reference {id: ...} or {name: ...} exactly."""
+        key = "id" if ref.get("id") else "name"
+        data = self.get(endpoint, {"paging": "false", "fields": fields, "filter": f"{key}:eq:{ref[key]}"})
+        return data[endpoint]
+
+    def data_set_org_units(self, uid: str) -> list[str]:
+        data = self.get(f"dataSets/{uid}", {"fields": "organisationUnits[id]"})
+        return sorted(ou["id"] for ou in data.get("organisationUnits", []))
+
+    def post_data_values(self, payload: dict[str, Any], dry_run: bool = True,
+                         import_strategy: str = "CREATE_AND_UPDATE", timeout: float = 900) -> dict[str, Any]:
+        """POST a dataValueSets payload. Returns the import summary, also for a 409 with conflicts."""
+        resp = self.session.post(
+            f"{self.base}/dataValueSets", json=payload, timeout=timeout,
+            params={"dryRun": str(dry_run).lower(), "importStrategy": import_strategy, "async": "false"},
+        )
+        if resp.status_code == 409 or resp.ok:
+            try:
+                return resp.json()
+            except ValueError:
+                pass
+        resp.raise_for_status()
+        return resp.json()
 
 def client_for(cfg: Config, client: Dhis2Client | None = None) -> Dhis2Client | None:
     """The client to use: the one passed in (e.g. from an OpenHEXA connection) wins over the config."""

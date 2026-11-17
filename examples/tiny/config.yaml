@@ -28,12 +28,17 @@ incidence:
 
 rates:
   care_seeking: 0.6
-  u5_share: 0.4
-  positivity: 0.45
-  testing_rate: 0.9
-  act_rate: 0.95
-  severe_rate: 0.05
-  cfr: 0.02
+  positivity: 0.45            # confirmed / tested
+  testing_rate: 0.9           # tested / suspected
+  act_rate: 0.95              # ground truth only
+  severe_rate: 0.05           # share of confirmed cases that are severe
+  severe_rate_by_band:        # optional per-band override
+    u5: 0.08
+  presumed_rate: 0.3          # share of untested suspected cases managed as severe (présumé)
+  cfr: 0.02                   # deaths among confirmed severe cases (ground truth only)
+  age_bands:                  # share of confirmed cases; each band maps to a category option combo
+    - {band: u5, share: 0.4}
+    - {band: 5plus, share: 0.6}
 
 micro_share:
   default: 0.0
@@ -46,10 +51,6 @@ allocation_weights:
     Hospital: 3.0
     Health Centre: 2.0
     Health Post: 1.0
-
-stocks:
-  stock_start_months: 2
-  delivery_factor: 1.0
 
 mapping: mapping.yaml
 

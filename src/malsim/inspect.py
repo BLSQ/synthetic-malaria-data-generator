@@ -1,4 +1,4 @@
-"""Read-only check of a config's inputs before a run: levels, mapping, population, geometry, raster.
+"""Read-only check of a config's inputs before a run: levels, population, geometry, raster, DHIS2 mapping.
 
 Call `inspect(cfg, client)` from a notebook, or run `malsim inspect --config x.yaml`.
 """
@@ -12,6 +12,7 @@ import pandas as pd
 from .config import Config, ConfigError
 from .dhis2 import Dhis2Client, client_for
 from .inputs import load_unit_geometries, read_population, zonal_means
+from .mapping import load_mapping, resolve_mapping
 from .model import make_periods
 from .pyramid import build_pyramid, drop_zero_weight, load_org_units
 
@@ -96,4 +97,32 @@ def inspect(cfg: Config, client: Dhis2Client | None = None) -> dict[str, Any]:
         except (ConfigError, ImportError, OSError) as exc:
             inc["error"] = str(exc)
         report["incidence"] = inc
+
+    if cfg.mapping:
+        report["mapping"] = inspect_mapping(cfg, pyramid.facilities["uid"].tolist(), client)
     return report
+
+
+def inspect_mapping(cfg: Config, facilities: list[str], client: Dhis2Client | None) -> dict[str, Any]:
+    """Resolve the mapping against the instance and check that the facilities can receive the values."""
+    out: dict[str, Any] = {"path": cfg.mapping, "age_bands": cfg.rates.age_bands}
+    try:
+        resolved = resolve_mapping(load_mapping(cfg.mapping), cfg.rates.bands, client)
+    except ConfigError as exc:
+        out["error"] = str(exc)
+        return out
+    out["resolved"] = {k: resolved[k] for k in ("dataSet", "attributeOptionCombo", "skip_zeros",
+                                                "elements", "age_bands")}
+    out["details"] = resolved["details"]
+    out["warnings"] = resolved["warnings"]
+    if client is not None and resolved["dataSet"] and hasattr(client, "data_set_org_units"):
+        assigned = set(client.data_set_org_units(resolved["dataSet"]))
+        not_assigned = sorted(set(facilities) - assigned)
+        out["data_set_assignment"] = {
+            "org_units_assigned": len(assigned),
+            "simulated_facilities_not_assigned": len(not_assigned),
+            "examples_not_assigned": not_assigned[:10],
+        }
+    n_values = len(facilities) * cfg.run.months * len(resolved["elements"]) * len(cfg.rates.bands)
+    out["data_values_before_skipping_zeros"] = n_values
+    return out

@@ -32,17 +32,58 @@ def square(x0, x1, y0=0.05, y1=0.95):
 TINY_POLYGONS = {"DistAAAAAA1": square(0.05, 0.95), "DistAAAAAA2": square(1.05, 1.95)}
 
 
+AGE_COMBO = {"id": "CcAgeGrp001", "name": "Age 5", "categoryOptionCombos": [
+    {"id": "CocUnder5Y1", "name": "< 5"}, {"id": "Coc5PlusYr1", "name": ">= 5"}]}
+TINY_DATA_ELEMENTS = {uid: name for uid, name in [
+    ("DeSuspectd1", "Suspected cases"), ("DePresumed1", "Presumed cases"),
+    ("DeConfSimp1", "Confirmed simple cases"), ("DeConfSevr1", "Confirmed severe cases")]}
+
+
+def fake_metadata():
+    """Data elements, data set and COCs matching examples/tiny/mapping.yaml, as the API returns them."""
+    des = [{"id": uid, "name": name, "valueType": "INTEGER_ZERO_OR_POSITIVE", "categoryCombo": AGE_COMBO,
+            "dataSetElements": [{"dataSet": {"id": "DsMonthly01", "name": "Monthly cases"}}]}
+           for uid, name in TINY_DATA_ELEMENTS.items()]
+    return {
+        "dataElements": des,
+        "dataSets": [{"id": "DsMonthly01", "name": "Monthly cases", "periodType": "Monthly",
+                      "dataSetElements": [{"dataElement": {"id": uid}} for uid in TINY_DATA_ELEMENTS]}],
+        "categoryOptionCombos": [{"id": "HllvX50cXC0", "name": "default"}, *AGE_COMBO["categoryOptionCombos"]],
+    }
+
+
 class FakeDhis2Client:
     """Serves the tiny pyramid as the DHIS2 Web API would. No network."""
 
     base = "https://fake.dhis2.test/api"
     credential_source = "fake"
 
-    def __init__(self, polygons=None, extra_org_units=()):
+    def __init__(self, polygons=None, extra_org_units=(), metadata=None, assigned=None, import_responses=None):
         self.meta = json.loads((TINY / "metadata.json").read_text(encoding="utf-8"))
         self.meta["organisationUnits"] += list(extra_org_units)
         self.population = pd.read_csv(TINY / "population.csv")
         self.polygons = TINY_POLYGONS if polygons is None else polygons
+        self.metadata = fake_metadata() if metadata is None else metadata
+        self.assigned = assigned
+        self.import_responses = list(import_responses or [])
+        self.posts = []
+
+    def find(self, endpoint, ref, fields):
+        key = "id" if "id" in ref else "name"
+        return [o for o in self.metadata.get(endpoint, []) if o.get(key) == ref[key]]
+
+    def data_set_org_units(self, uid):
+        if self.assigned is not None:
+            return sorted(self.assigned)
+        return sorted(ou["id"] for ou in self.meta["organisationUnits"] if ou["level"] == 4)
+
+    def post_data_values(self, payload, dry_run=True, import_strategy="CREATE_AND_UPDATE"):
+        self.posts.append({"payload": payload, "dry_run": dry_run, "import_strategy": import_strategy})
+        if self.import_responses:
+            return self.import_responses.pop(0)
+        n = len(payload["dataValues"])
+        return {"httpStatus": "OK", "response": {"status": "SUCCESS", "conflicts": [],
+                "importCount": {"imported": n, "updated": 0, "ignored": 0, "deleted": 0}}}
 
     def org_units(self):
         keep = ("id", "name", "level", "parent", "closedDate")
