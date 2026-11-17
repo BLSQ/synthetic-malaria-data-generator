@@ -123,11 +123,17 @@ class Dhis2Client:
         return sorted(ou["id"] for ou in data.get("organisationUnits", []))
 
     def post_data_values(self, payload: dict[str, Any], dry_run: bool = True,
-                         import_strategy: str = "CREATE_AND_UPDATE", timeout: float = 900) -> dict[str, Any]:
-        """POST a dataValueSets payload. Returns the import summary, also for a 409 with conflicts."""
+                         import_strategy: str = "CREATE_AND_UPDATE", skip_audit: bool = False,
+                         timeout: float = 900) -> dict[str, Any]:
+        """POST a dataValueSets payload. Returns the import summary, also for a 409 with conflicts.
+
+        skip_audit: no audit row per value (faster on large imports); the user needs the
+        F_SKIP_DATA_IMPORT_AUDIT authority.
+        """
         resp = self.session.post(
             f"{self.base}/dataValueSets", json=payload, timeout=timeout,
-            params={"dryRun": str(dry_run).lower(), "importStrategy": import_strategy, "async": "false"},
+            params={"dryRun": str(dry_run).lower(), "importStrategy": import_strategy,
+                    "skipAudit": str(skip_audit).lower(), "async": "false"},
         )
         if resp.status_code == 409 or resp.ok:
             try:

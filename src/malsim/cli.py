@@ -27,6 +27,9 @@ def main(argv: list[str] | None = None) -> int:
     psh.add_argument("--from", dest="from_dir", help="output dir of a generate run (default: output.dir)")
     psh.add_argument("--commit", action="store_true", help="actually write the values (default: dry run)")
     psh.add_argument("--chunk-size", type=int, default=50_000)
+    psh.add_argument("--keep-audit", action="store_true",
+                     help="write DHIS2's audit row per value (default: skipAudit, faster; needs "
+                          "the F_SKIP_DATA_IMPORT_AUDIT authority)")
     gen.add_argument("--seed", type=int, help="override run.seed")
     gen.add_argument("--out", help="override output.dir")
     args = parser.parse_args(argv)
@@ -39,7 +42,8 @@ def main(argv: list[str] | None = None) -> int:
             from .push import push
             cfg = resolve_config(args.config)
             report = push(args.from_dir or cfg.output.dir, Dhis2Client.from_config(cfg.dhis2),
-                          commit=args.commit, chunk_size=args.chunk_size, progress=print)
+                          commit=args.commit, chunk_size=args.chunk_size, skip_audit=not args.keep_audit,
+                          progress=print)
             print(yaml.safe_dump(report, sort_keys=False, allow_unicode=True))
             return 0 if report["conflict_chunks"] == 0 else 2
         if args.command == "inspect":

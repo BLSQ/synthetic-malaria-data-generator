@@ -28,8 +28,11 @@ from malsim.run import generate, resolve_config
 @parameter("output_dir", name="Output directory (in workspace files)", type=str, default="malsim/output")
 @parameter("seed", name="Seed (overrides config)", type=int, required=False)
 @parameter("commit", name="Push: write to DHIS2 (otherwise dry run)", type=bool, default=False)
+@parameter("skip_audit", name="Push: skip DHIS2 audit (faster; needs F_SKIP_DATA_IMPORT_AUDIT)", type=bool,
+           default=True)
 def malsim_generate(mode: str, config_path: str, dhis2: DHIS2Connection, population_de: str | None = None,
-                    output_dir: str = "malsim/output", seed: int | None = None, commit: bool = False):
+                    output_dir: str = "malsim/output", seed: int | None = None, commit: bool = False,
+                    skip_audit: bool = True):
     files_root = Path(workspace.files_path)
     client = Dhis2Client(dhis2.url, username=dhis2.username, password=dhis2.password,
                          source="openhexa_connection")
@@ -47,7 +50,7 @@ def malsim_generate(mode: str, config_path: str, dhis2: DHIS2Connection, populat
 
     if mode == "push":
         # Pushes the values from a previous generate run in output_dir.
-        report = push(out, client, commit=commit, progress=current_run.log_info)
+        report = push(out, client, commit=commit, skip_audit=skip_audit, progress=current_run.log_info)
         current_run.log_info(yaml.safe_dump({k: v for k, v in report.items() if k != "conflicts"},
                                             sort_keys=False, allow_unicode=True))
         for c in report["conflicts"][:10]:

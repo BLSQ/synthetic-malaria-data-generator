@@ -2,6 +2,8 @@
 
 Values are rebuilt from `datavalues.csv` and the resolved mapping `dhis2_mapping.yaml` written by
 `generate`, and POSTed to /api/dataValueSets in chunks. CREATE_AND_UPDATE makes re-runs idempotent.
+skipAudit is on by default (no audit row per value, faster); it is also sent on dry runs so a
+missing F_SKIP_DATA_IMPORT_AUDIT authority shows up before the commit.
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ def _summary(resp: dict[str, Any]) -> dict[str, Any]:
 
 
 def push(out_dir: str | Path, client, *, commit: bool = False, chunk_size: int = 50_000,
-         max_conflict_chunks: int = 3, import_strategy: str = "CREATE_AND_UPDATE",
+         max_conflict_chunks: int = 3, import_strategy: str = "CREATE_AND_UPDATE", skip_audit: bool = True,
          progress: Callable[[str], None] | None = None) -> dict[str, Any]:
     out_dir = Path(out_dir)
     csv_path, mapping_path = out_dir / "datavalues.csv", out_dir / "dhis2_mapping.yaml"
@@ -49,7 +51,7 @@ def push(out_dir: str | Path, client, *, commit: bool = False, chunk_size: int =
     totals = {k: 0 for k in COUNT_KEYS}
     conflicts: list[Any] = []
     report: dict[str, Any] = {"instance": base, "commit": commit, "import_strategy": import_strategy,
-                              "chunk_size": chunk_size, "chunks": 0, "values_sent": 0, "conflict_chunks": 0,
+                              "skip_audit": skip_audit, "chunk_size": chunk_size, "chunks": 0, "values_sent": 0, "conflict_chunks": 0,
                               "stopped_early": False}
     for i in itertools.count(1):
         chunk = list(itertools.islice(values, chunk_size))
@@ -58,7 +60,8 @@ def push(out_dir: str | Path, client, *, commit: bool = False, chunk_size: int =
         payload: dict[str, Any] = {"dataValues": chunk}
         if resolved.get("dataSet"):
             payload = {"dataSet": resolved["dataSet"], **payload}
-        resp = client.post_data_values(payload, dry_run=not commit, import_strategy=import_strategy)
+        resp = client.post_data_values(payload, dry_run=not commit, import_strategy=import_strategy,
+                                       skip_audit=skip_audit)
         s = _summary(resp)
         counts = s.get("importCount") or {}
         for k in COUNT_KEYS:

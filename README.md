@@ -205,6 +205,10 @@ Notes:
    example): `mode: inspect` first, then `mode: generate`, then `mode: push` (a dry run),
    and `mode: push` with `commit` ticked. `push` reads the outputs of the generate run in
    the same `output_dir`. Outputs go to `output_dir` in workspace Files.
+   `push` sends `skipAudit=true` by default (DHIS2 writes no audit row per value, which speeds
+   up large imports); the DHIS2 user needs the `F_SKIP_DATA_IMPORT_AUDIT` authority. It is also
+   sent on dry runs, so a missing authority shows up before the commit. Untick `skip_audit`
+   (CLI: `--keep-audit`) to keep the audit trail.
 
 Notebook (same code, faster to iterate), with the bundle's `malsim/` folder uploaded next to the notebook:
 

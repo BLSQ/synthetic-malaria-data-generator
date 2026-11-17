@@ -34,6 +34,20 @@ def test_commit(out):
     assert saved["commit"] is True and saved["conflict_chunks"] == 0
 
 
+def test_skip_audit_by_default_and_on_dry_runs(out):
+    client = FakeDhis2Client()
+    report = push(out, client, chunk_size=10_000)
+    assert [p["skip_audit"] for p in client.posts] == [True]
+    assert report["skip_audit"] is True
+
+
+def test_keep_audit(out):
+    client = FakeDhis2Client()
+    report = push(out, client, commit=True, chunk_size=10_000, skip_audit=False)
+    assert [p["skip_audit"] for p in client.posts] == [False]
+    assert report["skip_audit"] is False
+
+
 def test_stops_after_conflicting_chunks(out):
     bad = {"httpStatus": "Conflict", "response": {"status": "WARNING", "conflicts": [{"object": "x", "value": "bad"}],
                                                   "importCount": {"imported": 0, "ignored": 500}}}

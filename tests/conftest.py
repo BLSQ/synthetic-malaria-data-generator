@@ -77,8 +77,9 @@ class FakeDhis2Client:
             return sorted(self.assigned)
         return sorted(ou["id"] for ou in self.meta["organisationUnits"] if ou["level"] == 4)
 
-    def post_data_values(self, payload, dry_run=True, import_strategy="CREATE_AND_UPDATE"):
-        self.posts.append({"payload": payload, "dry_run": dry_run, "import_strategy": import_strategy})
+    def post_data_values(self, payload, dry_run=True, import_strategy="CREATE_AND_UPDATE", skip_audit=False):
+        self.posts.append({"payload": payload, "dry_run": dry_run, "import_strategy": import_strategy,
+                           "skip_audit": skip_audit})
         if self.import_responses:
             return self.import_responses.pop(0)
         n = len(payload["dataValues"])
